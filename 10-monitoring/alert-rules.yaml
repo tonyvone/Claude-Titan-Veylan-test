@@ -1,0 +1,278 @@
+# Prometheus Alert Rules for Veylan VisionOS
+---
+groups:
+  - name: titan_memory_alerts
+    interval: 30s
+    rules:
+      # High query latency
+      - alert: TitanMemoryHighQueryLatency
+        expr: histogram_quantile(0.95, rate(titan_memory_query_duration_seconds_bucket[5m])) > 0.200
+        for: 5m
+        labels:
+          severity: warning
+          component: titan-memory
+        annotations:
+          summary: "Titan Memory p95 query latency is high"
+          description: "p95 query latency is {{ $value }}s (threshold: 200ms) for {{ $labels.instance }}"
+
+      # Very high query latency (critical)
+      - alert: TitanMemoryVeryHighQueryLatency
+        expr: histogram_quantile(0.95, rate(titan_memory_query_duration_seconds_bucket[5m])) > 0.500
+        for: 2m
+        labels:
+          severity: critical
+          component: titan-memory
+        annotations:
+          summary: "Titan Memory p95 query latency is critically high"
+          description: "p95 query latency is {{ $value }}s (threshold: 500ms) for {{ $labels.instance }}"
+
+      # High error rate
+      - alert: TitanMemoryHighErrorRate
+        expr: rate(titan_memory_query_errors_total[5m]) / rate(titan_memory_query_total[5m]) > 0.05
+        for: 3m
+        labels:
+          severity: warning
+          component: titan-memory
+        annotations:
+          summary: "Titan Memory error rate is high"
+          description: "Error rate is {{ $value | humanizePercentage }} (threshold: 5%)"
+
+      # Memory slot size growing too fast
+      - alert: TitanMemorySlotGrowthHigh
+        expr: |
+          (
+            titan_memory_slot_size_bytes -
+            titan_memory_slot_size_bytes offset 24h
+          ) / titan_memory_slot_size_bytes offset 24h > 0.50
+        for: 1h
+        labels:
+          severity: info
+          component: titan-memory
+        annotations:
+          summary: "Memory slot {{ $labels.slot }} growing rapidly"
+          description: "Slot has grown {{ $value | humanizePercentage }} in 24h"
+
+      # Cache hit rate too low
+      - alert: TitanMemoryCacheHitRateLow
+        expr: |
+          rate(titan_memory_cache_hits_total[10m]) /
+          (rate(titan_memory_cache_hits_total[10m]) + rate(titan_memory_cache_misses_total[10m])) < 0.70
+        for: 15m
+        labels:
+          severity: warning
+          component: titan-memory
+        annotations:
+          summary: "Titan Memory cache hit rate is low"
+          description: "Cache hit rate is {{ $value | humanizePercentage }} (threshold: 70%)"
+
+  - name: agent_alerts
+    interval: 30s
+    rules:
+      # Trading Agent: Bid latency too high (critical for RTB)
+      - alert: TradingAgentBidLatencyHigh
+        expr: histogram_quantile(0.95, rate(trading_agent_bid_latency_milliseconds_bucket[2m])) > 50
+        for: 1m
+        labels:
+          severity: critical
+          component: trading-agent
+        annotations:
+          summary: "Trading Agent bid latency exceeds RTB SLA"
+          description: "p95 bid latency is {{ $value }}ms (SLA: 50ms)"
+
+      # Trading Agent: Win rate dropped
+      - alert: TradingAgentWinRateDropped
+        expr: trading_agent_win_rate < 0.30
+        for: 10m
+        labels:
+          severity: warning
+          component: trading-agent
+        annotations:
+          summary: "Trading Agent win rate has dropped"
+          description: "Win rate is {{ $value | humanizePercentage }} (expected: >30%)"
+
+      # Agent decision failures
+      - alert: AgentDecisionFailureRate
+        expr: |
+          rate(agent_decisions_total{outcome="failure"}[5m]) /
+          rate(agent_decisions_total[5m]) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+          component: agent
+        annotations:
+          summary: "Agent {{ $labels.agent }} has high failure rate"
+          description: "Failure rate is {{ $value | humanizePercentage }} (threshold: 10%)"
+
+      # Strategy Agent: Optimization taking too long
+      - alert: StrategyAgentOptimizationSlow
+        expr: histogram_quantile(0.95, rate(agent_decision_duration_seconds_bucket{agent="strategy"}[5m])) > 60
+        for: 5m
+        labels:
+          severity: warning
+          component: strategy-agent
+        annotations:
+          summary: "Strategy Agent optimization is slow"
+          description: "p95 optimization time is {{ $value }}s (threshold: 60s)"
+
+  - name: miras_alerts
+    interval: 30s
+    rules:
+      # MIRAS optimization not converging
+      - alert: MIRASOptimizationNotConverging
+        expr: miras_generations_total > 100 and miras_pareto_front_size == 0
+        for: 2m
+        labels:
+          severity: warning
+          component: miras
+        annotations:
+          summary: "MIRAS optimization not finding solutions"
+          description: "{{ $value }} generations without Pareto solutions"
+
+      # MIRAS taking too long
+      - alert: MIRASOptimizationTimeout
+        expr: histogram_quantile(0.95, rate(miras_optimization_duration_seconds_bucket[5m])) > 300
+        for: 5m
+        labels:
+          severity: warning
+          component: miras
+        annotations:
+          summary: "MIRAS optimization is taking too long"
+          description: "p95 optimization time is {{ $value }}s (threshold: 5min)"
+
+  - name: outcome_layer_alerts
+    interval: 30s
+    rules:
+      # VCF creation errors
+      - alert: VCFCreationErrorRate
+        expr: rate(vcf_creation_errors_total[5m]) / rate(vcf_created_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: outcome-layer
+        annotations:
+          summary: "VCF creation error rate is high"
+          description: "Error rate is {{ $value | humanizePercentage }} (threshold: 5%)"
+
+      # DVF prediction accuracy degraded
+      - alert: DVFPredictionAccuracyDegraded
+        expr: dvf_prediction_error{metric="conversions"} > 0.20
+        for: 30m
+        labels:
+          severity: warning
+          component: outcome-layer
+        annotations:
+          summary: "DVF prediction accuracy has degraded"
+          description: "Prediction error for {{ $labels.metric }} is {{ $value | humanizePercentage }} (threshold: 20%)"
+
+  - name: campaign_alerts
+    interval: 60s
+    rules:
+      # Campaign underperforming (ROAS)
+      - alert: CampaignUnderperformingROAS
+        expr: campaign_roas < 2.0 and campaign_budget_spent_dollars > 1000
+        for: 1h
+        labels:
+          severity: info
+          component: campaign
+        annotations:
+          summary: "Campaign {{ $labels.campaign_id }} has low ROAS"
+          description: "ROAS is {{ $value }} (threshold: 2.0), spent ${{ $labels.budget_spent }}"
+
+      # Campaign budget overspend
+      - alert: CampaignBudgetOverspend
+        expr: campaign_budget_spent_dollars > campaign_budget_total_dollars * 1.05
+        for: 5m
+        labels:
+          severity: critical
+          component: campaign
+        annotations:
+          summary: "Campaign {{ $labels.campaign_id }} exceeded budget"
+          description: "Spent ${{ $value }}, budget was ${{ $labels.budget_total }}"
+
+  - name: infrastructure_alerts
+    interval: 30s
+    rules:
+      # High CPU usage
+      - alert: HighCPUUsage
+        expr: rate(container_cpu_usage_seconds_total[5m]) > 0.85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage on {{ $labels.pod }}"
+          description: "CPU usage is {{ $value | humanizePercentage }}"
+
+      # High memory usage
+      - alert: HighMemoryUsage
+        expr: container_memory_usage_bytes / container_spec_memory_limit_bytes > 0.90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage on {{ $labels.pod }}"
+          description: "Memory usage is {{ $value | humanizePercentage }} of limit"
+
+      # Pod restarts
+      - alert: PodRestarting
+        expr: rate(kube_pod_container_status_restarts_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pod {{ $labels.pod }} is restarting"
+          description: "Pod has restarted {{ $value }} times in 15min"
+
+      # Database connection issues
+      - alert: DatabaseConnectionPoolExhausted
+        expr: database_connection_pool_active / database_connection_pool_max > 0.90
+        for: 5m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Database connection pool nearly exhausted"
+          description: "{{ $value | humanizePercentage }} of connections in use"
+
+  - name: slo_alerts
+    interval: 60s
+    rules:
+      # SLO: 99.9% availability
+      - alert: SLOAvailabilityBreach
+        expr: |
+          (
+            sum(rate(http_requests_total{code!~"5.."}[30d])) /
+            sum(rate(http_requests_total[30d]))
+          ) < 0.999
+        labels:
+          severity: critical
+          slo: availability
+        annotations:
+          summary: "SLO breach: Availability below 99.9%"
+          description: "30-day availability is {{ $value | humanizePercentage }}"
+
+      # SLO: p95 latency < 200ms
+      - alert: SLOLatencyBreach
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[30d])) > 0.200
+        labels:
+          severity: critical
+          slo: latency
+        annotations:
+          summary: "SLO breach: p95 latency above 200ms"
+          description: "30-day p95 latency is {{ $value }}s"
+
+      # Error budget burn rate (fast burn)
+      - alert: ErrorBudgetFastBurn
+        expr: |
+          (
+            1 - (
+              sum(rate(http_requests_total{code!~"5.."}[1h])) /
+              sum(rate(http_requests_total[1h]))
+            )
+          ) > 14.4 * (1 - 0.999)  # 14.4x burn rate over 1h
+        for: 5m
+        labels:
+          severity: critical
+          slo: error-budget
+        annotations:
+          summary: "Error budget burning rapidly"
+          description: "At current rate, error budget will be exhausted in {{ $value }}h"

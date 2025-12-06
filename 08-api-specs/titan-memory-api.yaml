@@ -1,0 +1,488 @@
+openapi: 3.0.3
+info:
+  title: Titan Memory API
+  description: |
+    API for Veylan VisionOS Titan Memory Layer
+
+    Provides persistent, queryable long-term memory across all advertising contexts.
+    Supports vector similarity search, graph traversal, and temporal queries.
+  version: 1.0.0
+  contact:
+    name: Veylan Engineering
+    email: engineering@veylan.com
+
+servers:
+  - url: https://api.veylan.com/v1
+    description: Production
+  - url: https://api-staging.veylan.com/v1
+    description: Staging
+  - url: http://localhost:8000/v1
+    description: Local development
+
+tags:
+  - name: Memory
+    description: Core memory operations
+  - name: Search
+    description: Search and retrieval
+  - name: Graph
+    description: Graph operations
+  - name: Analytics
+    description: Memory analytics
+
+paths:
+  /memory/{slot}:
+    post:
+      tags:
+        - Memory
+      summary: Store data in memory slot
+      description: Store new data in specified memory slot (creative, audience, supply, outcome)
+      operationId: storeMemory
+      parameters:
+        - name: slot
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [creative, audience, supply, outcome]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemoryRecord'
+      responses:
+        '201':
+          description: Memory stored successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  memory_id:
+                    type: string
+                    format: uuid
+                  slot:
+                    type: string
+                  created_at:
+                    type: string
+                    format: date-time
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+    get:
+      tags:
+        - Memory
+      summary: Query memory slot
+      description: Query memory slot with filters
+      operationId: queryMemory
+      parameters:
+        - name: slot
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [creative, audience, supply, outcome]
+        - name: filters
+          in: query
+          schema:
+            type: object
+            additionalProperties: true
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Query results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MemoryRecord'
+                  total:
+                    type: integer
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+
+  /memory/{slot}/{id}:
+    get:
+      tags:
+        - Memory
+      summary: Get memory by ID
+      operationId: getMemory
+      parameters:
+        - name: slot
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Memory record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryRecord'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags:
+        - Memory
+      summary: Update memory
+      operationId: updateMemory
+      parameters:
+        - name: slot
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Memory updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryRecord'
+
+    delete:
+      tags:
+        - Memory
+      summary: Delete memory (soft delete)
+      operationId: deleteMemory
+      parameters:
+        - name: slot
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Memory deleted
+
+  /search/similarity:
+    post:
+      tags:
+        - Search
+      summary: Vector similarity search
+      description: Search for similar memories using vector embeddings
+      operationId: similaritySearch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - slot
+                - query_embedding
+              properties:
+                slot:
+                  type: string
+                  enum: [creative, audience, supply, outcome]
+                query_embedding:
+                  type: array
+                  items:
+                    type: number
+                  minItems: 512
+                  maxItems: 512
+                top_k:
+                  type: integer
+                  default: 10
+                  maximum: 100
+                filters:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        memory_id:
+                          type: string
+                          format: uuid
+                        similarity:
+                          type: number
+                          minimum: 0
+                          maximum: 1
+                        data:
+                          type: object
+                  query_time_ms:
+                    type: number
+
+  /graph/traverse:
+    post:
+      tags:
+        - Graph
+      summary: Graph traversal
+      description: Traverse graph relationships
+      operationId: graphTraverse
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - start_node
+                - relationship
+              properties:
+                start_node:
+                  type: object
+                  required:
+                    - slot
+                    - id
+                  properties:
+                    slot:
+                      type: string
+                    id:
+                      type: string
+                      format: uuid
+                relationship:
+                  type: string
+                target_node_type:
+                  type: string
+                max_depth:
+                  type: integer
+                  default: 1
+                  maximum: 5
+      responses:
+        '200':
+          description: Traversal results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nodes:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MemoryRecord'
+                  edges:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        from:
+                          type: string
+                          format: uuid
+                        to:
+                          type: string
+                          format: uuid
+                        relationship:
+                          type: string
+
+  /graph/edge:
+    post:
+      tags:
+        - Graph
+      summary: Create graph edge
+      operationId: createEdge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - from_node
+                - to_node
+                - relationship
+              properties:
+                from_node:
+                  type: object
+                  properties:
+                    slot:
+                      type: string
+                    id:
+                      type: string
+                      format: uuid
+                to_node:
+                  type: object
+                  properties:
+                    slot:
+                      type: string
+                    id:
+                      type: string
+                      format: uuid
+                relationship:
+                  type: string
+                metadata:
+                  type: object
+      responses:
+        '201':
+          description: Edge created
+
+  /analytics/stats:
+    get:
+      tags:
+        - Analytics
+      summary: Get memory statistics
+      operationId: getStats
+      responses:
+        '200':
+          description: Memory statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  creative:
+                    $ref: '#/components/schemas/SlotStats'
+                  audience:
+                    $ref: '#/components/schemas/SlotStats'
+                  supply:
+                    $ref: '#/components/schemas/SlotStats'
+                  outcome:
+                    $ref: '#/components/schemas/SlotStats'
+
+components:
+  schemas:
+    MemoryRecord:
+      type: object
+      required:
+        - data
+      properties:
+        memory_id:
+          type: string
+          format: uuid
+          readOnly: true
+        slot:
+          type: string
+          enum: [creative, audience, supply, outcome]
+          readOnly: true
+        data:
+          type: object
+          additionalProperties: true
+        embedding:
+          type: array
+          items:
+            type: number
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+        access_count:
+          type: integer
+          readOnly: true
+        decay_weight:
+          type: number
+          minimum: 0
+          maximum: 1
+
+    SlotStats:
+      type: object
+      properties:
+        count:
+          type: integer
+        total_access:
+          type: integer
+        avg_decay_weight:
+          type: number
+        storage_bytes:
+          type: integer
+
+    Error:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    ValidationError:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+security:
+  - BearerAuth: []

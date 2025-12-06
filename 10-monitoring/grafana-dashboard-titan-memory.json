@@ -1,0 +1,198 @@
+{
+  "dashboard": {
+    "title": "Titan Memory - Performance Dashboard",
+    "uid": "titan-memory-perf",
+    "timezone": "browser",
+    "schemaVersion": 36,
+    "version": 1,
+    "refresh": "30s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "panels": [
+      {
+        "id": 1,
+        "title": "Query Rate (QPS)",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "sum(rate(titan_memory_query_total[5m]))",
+            "legendFormat": "Total QPS",
+            "refId": "A"
+          },
+          {
+            "expr": "sum(rate(titan_memory_query_total[5m])) by (slot)",
+            "legendFormat": "{{slot}}",
+            "refId": "B"
+          }
+        ],
+        "yaxes": [
+          {"label": "Queries/sec", "format": "short"},
+          {"label": "", "format": "short"}
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Query Latency (p95, p99)",
+        "type": "graph",
+        "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(titan_memory_query_duration_seconds_bucket[5m]))",
+            "legendFormat": "p95",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.99, rate(titan_memory_query_duration_seconds_bucket[5m]))",
+            "legendFormat": "p99",
+            "refId": "B"
+          }
+        ],
+        "yaxes": [
+          {"label": "Latency (s)", "format": "s"},
+          {"label": "", "format": "short"}
+        ],
+        "alert": {
+          "conditions": [
+            {
+              "evaluator": {"type": "gt", "params": [0.2]},
+              "query": {"params": ["A", "5m", "now"]},
+              "type": "query"
+            }
+          ],
+          "executionErrorState": "alerting",
+          "frequency": "60s",
+          "handler": 1,
+          "name": "Titan Memory p95 latency alert"
+        }
+      },
+      {
+        "id": 3,
+        "title": "Error Rate",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "sum(rate(titan_memory_query_errors_total[5m])) / sum(rate(titan_memory_query_total[5m]))",
+            "legendFormat": "Error Rate",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"label": "Error Rate", "format": "percentunit"},
+          {"label": "", "format": "short"}
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Memory Slot Sizes",
+        "type": "graph",
+        "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "titan_memory_slot_size_bytes",
+            "legendFormat": "{{slot}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"label": "Size", "format": "bytes"},
+          {"label": "", "format": "short"}
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Cache Hit Rate",
+        "type": "singlestat",
+        "gridPos": {"x": 0, "y": 16, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "rate(titan_memory_cache_hits_total[5m]) / (rate(titan_memory_cache_hits_total[5m]) + rate(titan_memory_cache_misses_total[5m]))",
+            "refId": "A"
+          }
+        ],
+        "format": "percentunit",
+        "colorBackground": true,
+        "thresholds": "0.7,0.85",
+        "colors": ["red", "yellow", "green"]
+      },
+      {
+        "id": 6,
+        "title": "Total Records",
+        "type": "singlestat",
+        "gridPos": {"x": 6, "y": 16, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "sum(titan_memory_slot_records_total)",
+            "refId": "A"
+          }
+        ],
+        "format": "short",
+        "sparkline": {"show": true}
+      },
+      {
+        "id": 7,
+        "title": "Vector Search Latency",
+        "type": "heatmap",
+        "gridPos": {"x": 0, "y": 20, "w": 24, "h": 8},
+        "targets": [
+          {
+            "expr": "rate(titan_memory_vector_search_latency_seconds_bucket[5m])",
+            "refId": "A",
+            "format": "heatmap"
+          }
+        ],
+        "dataFormat": "tsbuckets",
+        "yAxis": {"format": "s"}
+      },
+      {
+        "id": 8,
+        "title": "Top Slow Queries",
+        "type": "table",
+        "gridPos": {"x": 0, "y": 28, "w": 24, "h": 8},
+        "targets": [
+          {
+            "expr": "topk(10, titan_memory_query_duration_seconds{quantile=\"0.99\"})",
+            "refId": "A",
+            "format": "table"
+          }
+        ],
+        "transformations": [
+          {"id": "organize", "options": {"excludeByName": {}, "indexByName": {}, "renameByName": {}}}
+        ]
+      }
+    ],
+    "templating": {
+      "list": [
+        {
+          "name": "datasource",
+          "type": "datasource",
+          "query": "prometheus"
+        },
+        {
+          "name": "slot",
+          "type": "query",
+          "query": "label_values(titan_memory_query_total, slot)",
+          "multi": true,
+          "includeAll": true
+        }
+      ]
+    },
+    "annotations": {
+      "list": [
+        {
+          "datasource": "Prometheus",
+          "enable": true,
+          "expr": "ALERTS{alertname=\"TitanMemoryHighQueryLatency\"}",
+          "name": "Latency Alerts",
+          "step": "60s",
+          "tagKeys": "severity",
+          "textFormat": "{{alertname}}: {{summary}}",
+          "titleFormat": "Alert"
+        }
+      ]
+    }
+  }
+}

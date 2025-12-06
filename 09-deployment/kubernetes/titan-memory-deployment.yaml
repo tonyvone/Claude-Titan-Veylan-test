@@ -1,0 +1,255 @@
+---
+# Titan Memory Service Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: titan-memory-service
+  namespace: veylan-visionos
+  labels:
+    app: titan-memory
+    component: core
+    version: v1.0.0
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: titan-memory
+  template:
+    metadata:
+      labels:
+        app: titan-memory
+        component: core
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: titan-memory-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      initContainers:
+        - name: wait-for-databases
+          image: busybox:1.35
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z vector-db-service 6333; do
+                echo "Waiting for vector DB..."
+                sleep 2
+              done
+              until nc -z graph-db-service 7687; do
+                echo "Waiting for graph DB..."
+                sleep 2
+              done
+              echo "Databases ready!"
+
+      containers:
+        - name: titan-memory
+          image: veylan/titan-memory:v1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: grpc
+              containerPort: 9000
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+
+          env:
+            - name: ENVIRONMENT
+              value: "production"
+            - name: LOG_LEVEL
+              value: "info"
+            - name: VECTOR_DB_HOST
+              value: "vector-db-service"
+            - name: VECTOR_DB_PORT
+              value: "6333"
+            - name: GRAPH_DB_HOST
+              value: "graph-db-service"
+            - name: GRAPH_DB_PORT
+              value: "7687"
+            - name: TIMESERIES_DB_HOST
+              value: "timeseries-db-service"
+            - name: TIMESERIES_DB_PORT
+              value: "8086"
+            - name: OBJECT_STORE_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: object-store-credentials
+                  key: endpoint
+            - name: OBJECT_STORE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: object-store-credentials
+                  key: access_key
+            - name: OBJECT_STORE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: object-store-credentials
+                  key: secret_key
+
+          resources:
+            requests:
+              cpu: 2000m
+              memory: 4Gi
+            limits:
+              cpu: 4000m
+              memory: 8Gi
+
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          volumeMounts:
+            - name: config
+              mountPath: /etc/titan-memory
+              readOnly: true
+            - name: cache
+              mountPath: /var/cache/titan-memory
+
+      volumes:
+        - name: config
+          configMap:
+            name: titan-memory-config
+        - name: cache
+          emptyDir:
+            sizeLimit: 10Gi
+
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: titan-memory-service
+  namespace: veylan-visionos
+  labels:
+    app: titan-memory
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+    - name: grpc
+      port: 9000
+      targetPort: grpc
+      protocol: TCP
+  selector:
+    app: titan-memory
+
+---
+# Horizontal Pod Autoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: titan-memory-hpa
+  namespace: veylan-visionos
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: titan-memory-service
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+    - type: Pods
+      pods:
+        metric:
+          name: http_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: "1000"
+
+---
+# Pod Disruption Budget
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: titan-memory-pdb
+  namespace: veylan-visionos
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: titan-memory
+
+---
+# ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: titan-memory-config
+  namespace: veylan-visionos
+data:
+  config.yaml: |
+    server:
+      http_port: 8080
+      grpc_port: 9000
+      metrics_port: 9090
+
+    memory:
+      slots:
+        - creative
+        - audience
+        - supply
+        - outcome
+
+      vector_search:
+        index_type: hnsw
+        ef_construction: 200
+        m: 16
+
+      decay:
+        enabled: true
+        half_life_days: 365
+        min_weight: 0.1
+
+    performance:
+      query_timeout_ms: 500
+      max_concurrent_queries: 1000
+      cache_size_mb: 2048
+
+    logging:
+      level: info
+      format: json
+      output: stdout

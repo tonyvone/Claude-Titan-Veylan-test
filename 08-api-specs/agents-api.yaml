@@ -1,0 +1,560 @@
+openapi: 3.0.3
+info:
+  title: Veylan Agents API
+  description: |
+    API for autonomous advertising agents in Veylan VisionOS
+
+    Agents:
+    - Strategy Agent: Campaign planning and optimization
+    - Creative Agent: Creative generation and testing
+    - Trading Agent: Real-time bidding and execution
+    - BI Agent: Insights, reporting, and forecasting
+  version: 1.0.0
+
+servers:
+  - url: https://api.veylan.com/v1
+    description: Production
+
+paths:
+  # Strategy Agent
+  /agents/strategy/plan:
+    post:
+      tags:
+        - Strategy Agent
+      summary: Create campaign plan
+      description: Generate optimal campaign strategy using Titan Memory and MIRAS
+      operationId: planCampaign
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - brief
+              properties:
+                brief:
+                  type: object
+                  required:
+                    - objective
+                    - budget
+                    - duration_days
+                  properties:
+                    objective:
+                      type: string
+                      enum: [maximize_roas, maximize_conversions, maximize_reach, brand_awareness]
+                    budget:
+                      type: number
+                      minimum: 0
+                    duration_days:
+                      type: integer
+                      minimum: 1
+                      maximum: 365
+                    target_roas:
+                      type: number
+                    product:
+                      type: string
+                    target_audience:
+                      type: string
+                constraints:
+                  type: object
+                  properties:
+                    max_cpa:
+                      type: number
+                    frequency_cap:
+                      type: integer
+                    brand_safety:
+                      type: array
+                      items:
+                        type: string
+      responses:
+        '200':
+          description: Campaign plan generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignPlan'
+        '400':
+          $ref: '#/components/responses/Error'
+
+  /agents/strategy/optimize/{campaign_id}:
+    post:
+      tags:
+        - Strategy Agent
+      summary: Optimize ongoing campaign
+      description: Generate optimization recommendations for active campaign
+      operationId: optimizeCampaign
+      parameters:
+        - name: campaign_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Optimization recommendations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  recommendations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Recommendation'
+                  priority:
+                    type: string
+                    enum: [low, medium, high, critical]
+
+  # Creative Agent
+  /agents/creative/generate:
+    post:
+      tags:
+        - Creative Agent
+      summary: Generate creative variants
+      description: Generate creative variants optimized for target audience
+      operationId: generateCreatives
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - base_creative_id
+                - target_audience_id
+                - num_variants
+              properties:
+                base_creative_id:
+                  type: string
+                  format: uuid
+                target_audience_id:
+                  type: string
+                  format: uuid
+                num_variants:
+                  type: integer
+                  minimum: 1
+                  maximum: 10
+                brand_dna_constraints:
+                  type: object
+      responses:
+        '200':
+          description: Creative variants generated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  variants:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CreativeVariant'
+
+  /agents/creative/test:
+    post:
+      tags:
+        - Creative Agent
+      summary: Setup A/B test
+      description: Setup creative A/B test with automatic analysis
+      operationId: setupCreativeTest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - control_creative_id
+                - variant_creative_ids
+                - test_config
+              properties:
+                control_creative_id:
+                  type: string
+                  format: uuid
+                variant_creative_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                test_config:
+                  type: object
+                  properties:
+                    allocation:
+                      type: object
+                      additionalProperties:
+                        type: number
+                    duration_days:
+                      type: integer
+                    success_metric:
+                      type: string
+                      enum: [ctr, cvr, roas, engagement]
+                    min_sample_size:
+                      type: integer
+      responses:
+        '201':
+          description: Test created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  test_id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                  start_date:
+                    type: string
+                    format: date-time
+
+  # Trading Agent
+  /agents/trading/bid:
+    post:
+      tags:
+        - Trading Agent
+      summary: Make bid decision
+      description: Real-time bid decision for RTB auction
+      operationId: makeBidDecision
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - bid_request
+                - campaign_id
+              properties:
+                bid_request:
+                  $ref: '#/components/schemas/BidRequest'
+                campaign_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Bid decision
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BidResponse'
+
+  /agents/trading/pacing/{campaign_id}:
+    get:
+      tags:
+        - Trading Agent
+      summary: Get pacing multiplier
+      description: Get current pacing multiplier for campaign
+      operationId: getPacingMultiplier
+      parameters:
+        - name: campaign_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Pacing multiplier
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  multiplier:
+                    type: number
+                    minimum: 0
+                    maximum: 2
+                  reason:
+                    type: string
+                  budget_remaining:
+                    type: number
+                  time_remaining_hours:
+                    type: number
+
+  # BI Agent
+  /agents/bi/report/{campaign_id}:
+    post:
+      tags:
+        - BI Agent
+      summary: Generate campaign report
+      description: Generate comprehensive campaign wrap-up report
+      operationId: generateReport
+      parameters:
+        - name: campaign_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                report_type:
+                  type: string
+                  enum: [wrap_up, mid_campaign, daily]
+                sections:
+                  type: array
+                  items:
+                    type: string
+                    enum: [summary, performance, audiences, creatives, insights, recommendations]
+      responses:
+        '200':
+          description: Report generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Report'
+
+  /agents/bi/forecast:
+    post:
+      tags:
+        - BI Agent
+      summary: Forecast campaign performance
+      description: Predict campaign outcomes using historical data
+      operationId: forecastCampaign
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - campaign_brief
+                - forecast_horizon_days
+              properties:
+                campaign_brief:
+                  type: object
+                forecast_horizon_days:
+                  type: integer
+                  minimum: 1
+                  maximum: 90
+      responses:
+        '200':
+          description: Forecast generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Forecast'
+
+  /agents/bi/explain/{decision_id}:
+    get:
+      tags:
+        - BI Agent
+      summary: Explain decision
+      description: Generate natural language explanation for a decision
+      operationId: explainDecision
+      parameters:
+        - name: decision_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Explanation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Explanation'
+
+components:
+  schemas:
+    CampaignPlan:
+      type: object
+      properties:
+        campaign_id:
+          type: string
+          format: uuid
+        budget_allocation:
+          type: object
+          additionalProperties:
+            type: number
+        target_audiences:
+          type: array
+          items:
+            type: string
+            format: uuid
+        creative_strategy:
+          type: object
+          properties:
+            refresh_frequency_days:
+              type: integer
+            num_variants:
+              type: integer
+            style:
+              type: string
+        bidding_strategy:
+          type: object
+          properties:
+            type:
+              type: string
+              enum: [target_cpa, target_roas, maximize_conversions]
+            bid_floor:
+              type: number
+            bid_ceiling:
+              type: number
+        predicted_outcomes:
+          type: object
+          properties:
+            roas:
+              type: number
+            conversions:
+              type: number
+            reach:
+              type: integer
+
+    Recommendation:
+      type: object
+      properties:
+        recommendation_id:
+          type: string
+          format: uuid
+        action:
+          type: string
+          enum: [increase_budget, decrease_budget, refresh_creative, adjust_bid, reallocate, pause]
+        target:
+          type: string
+        reason:
+          type: string
+        expected_impact:
+          type: object
+        priority:
+          type: string
+          enum: [low, medium, high]
+
+    CreativeVariant:
+      type: object
+      properties:
+        creative_id:
+          type: string
+          format: uuid
+        ad_dna:
+          type: object
+        predicted_performance:
+          type: object
+          properties:
+            ctr:
+              type: number
+            cvr:
+              type: number
+            engagement:
+              type: number
+
+    BidRequest:
+      type: object
+      properties:
+        inventory_id:
+          type: string
+          format: uuid
+        user_segment:
+          type: string
+        context:
+          type: object
+        floor_price:
+          type: number
+
+    BidResponse:
+      type: object
+      properties:
+        bid:
+          type: boolean
+        bid_price:
+          type: number
+        creative_id:
+          type: string
+          format: uuid
+        supply_path:
+          type: string
+
+    Report:
+      type: object
+      properties:
+        report_id:
+          type: string
+          format: uuid
+        campaign_id:
+          type: string
+          format: uuid
+        summary:
+          type: string
+        sections:
+          type: object
+        generated_at:
+          type: string
+          format: date-time
+
+    Forecast:
+      type: object
+      properties:
+        forecast_id:
+          type: string
+          format: uuid
+        predictions:
+          type: object
+          properties:
+            impressions:
+              $ref: '#/components/schemas/PredictionInterval'
+            clicks:
+              $ref: '#/components/schemas/PredictionInterval'
+            conversions:
+              $ref: '#/components/schemas/PredictionInterval'
+            revenue:
+              $ref: '#/components/schemas/PredictionInterval'
+
+    PredictionInterval:
+      type: object
+      properties:
+        point_estimate:
+          type: number
+        ci_lower:
+          type: number
+        ci_upper:
+          type: number
+        confidence_level:
+          type: number
+
+    Explanation:
+      type: object
+      properties:
+        decision_id:
+          type: string
+          format: uuid
+        decision_description:
+          type: string
+        reasoning_steps:
+          type: array
+          items:
+            type: string
+        data_sources:
+          type: array
+          items:
+            type: string
+        narrative:
+          type: string
+
+  responses:
+    Error:
+      description: Error response
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+              message:
+                type: string
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+security:
+  - BearerAuth: []

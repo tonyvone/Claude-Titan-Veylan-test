@@ -1,0 +1,249 @@
+---
+# Strategy Agent Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: strategy-agent
+  namespace: veylan-visionos
+  labels:
+    app: strategy-agent
+    component: agent
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: strategy-agent
+  template:
+    metadata:
+      labels:
+        app: strategy-agent
+    spec:
+      containers:
+        - name: strategy-agent
+          image: veylan/strategy-agent:v1.0.0
+          ports:
+            - containerPort: 8081
+          env:
+            - name: TITAN_MEMORY_ENDPOINT
+              value: "http://titan-memory-service"
+            - name: MIRAS_ENDPOINT
+              value: "http://miras-service"
+          resources:
+            requests:
+              cpu: 1000m
+              memory: 2Gi
+            limits:
+              cpu: 2000m
+              memory: 4Gi
+
+---
+# Creative Agent Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: creative-agent
+  namespace: veylan-visionos
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: creative-agent
+  template:
+    metadata:
+      labels:
+        app: creative-agent
+    spec:
+      containers:
+        - name: creative-agent
+          image: veylan/creative-agent:v1.0.0
+          ports:
+            - containerPort: 8082
+          env:
+            - name: TITAN_MEMORY_ENDPOINT
+              value: "http://titan-memory-service"
+            - name: EMBEDDING_SERVICE_ENDPOINT
+              value: "http://embedding-service"
+          resources:
+            requests:
+              cpu: 2000m
+              memory: 4Gi
+              nvidia.com/gpu: 1
+            limits:
+              cpu: 4000m
+              memory: 8Gi
+              nvidia.com/gpu: 1
+
+---
+# Trading Agent Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trading-agent
+  namespace: veylan-visionos
+spec:
+  replicas: 5  # High replica count for RTB load
+  selector:
+    matchLabels:
+      app: trading-agent
+  template:
+    metadata:
+      labels:
+        app: trading-agent
+    spec:
+      containers:
+        - name: trading-agent
+          image: veylan/trading-agent:v1.0.0
+          ports:
+            - containerPort: 8083
+          env:
+            - name: TITAN_MEMORY_ENDPOINT
+              value: "http://titan-memory-service"
+            - name: SUPPLY_GRAPH_ENDPOINT
+              value: "http://supply-graph-service"
+            - name: BID_TIMEOUT_MS
+              value: "50"  # Very low latency requirement
+          resources:
+            requests:
+              cpu: 1000m
+              memory: 2Gi
+            limits:
+              cpu: 2000m
+              memory: 4Gi
+          # Very aggressive scaling for RTB
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8083
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+
+---
+# BI Agent Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bi-agent
+  namespace: veylan-visionos
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: bi-agent
+  template:
+    metadata:
+      labels:
+        app: bi-agent
+    spec:
+      containers:
+        - name: bi-agent
+          image: veylan/bi-agent:v1.0.0
+          ports:
+            - containerPort: 8084
+          env:
+            - name: TITAN_MEMORY_ENDPOINT
+              value: "http://titan-memory-service"
+            - name: CAUSAL_REASONING_ENDPOINT
+              value: "http://causal-reasoning-service"
+          resources:
+            requests:
+              cpu: 1000m
+              memory: 2Gi
+            limits:
+              cpu: 2000m
+              memory: 4Gi
+
+---
+# Agent Services
+apiVersion: v1
+kind: Service
+metadata:
+  name: strategy-agent-service
+  namespace: veylan-visionos
+spec:
+  selector:
+    app: strategy-agent
+  ports:
+    - port: 80
+      targetPort: 8081
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: creative-agent-service
+  namespace: veylan-visionos
+spec:
+  selector:
+    app: creative-agent
+  ports:
+    - port: 80
+      targetPort: 8082
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trading-agent-service
+  namespace: veylan-visionos
+spec:
+  selector:
+    app: trading-agent
+  ports:
+    - port: 80
+      targetPort: 8083
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bi-agent-service
+  namespace: veylan-visionos
+spec:
+  selector:
+    app: bi-agent
+  ports:
+    - port: 80
+      targetPort: 8084
+
+---
+# Trading Agent HPA (needs aggressive scaling)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: trading-agent-hpa
+  namespace: veylan-visionos
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: trading-agent
+  minReplicas: 5
+  maxReplicas: 50  # Can scale very high for RTB traffic
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60  # Conservative for low latency
+    - type: Pods
+      pods:
+        metric:
+          name: bid_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: "500"  # 500 RPS per pod
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30  # Fast scale up
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+    scaleDown:
+      stabilizationWindowSeconds: 300  # Slow scale down
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60

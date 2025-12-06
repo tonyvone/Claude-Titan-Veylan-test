@@ -1,0 +1,151 @@
+# Prometheus Configuration for Veylan VisionOS
+---
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'veylan-prod'
+    environment: 'production'
+
+# Alert manager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+# Rule files
+rule_files:
+  - '/etc/prometheus/alert-rules.yaml'
+
+# Scrape configurations
+scrape_configs:
+  # Titan Memory Service
+  - job_name: 'titan-memory'
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+            - veylan-visionos
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: titan-memory
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'titan_memory_.*'
+        action: keep
+
+  # Agents
+  - job_name: 'agents'
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+            - veylan-visionos
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_component]
+        action: keep
+        regex: agent
+
+  # MIRAS Optimizer
+  - job_name: 'miras'
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+            - veylan-visionos
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: miras-optimizer
+
+  # Causal Reasoning Service
+  - job_name: 'causal-reasoning'
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+            - veylan-visionos
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: causal-reasoning
+
+  # Node Exporter (infrastructure metrics)
+  - job_name: 'node-exporter'
+    kubernetes_sd_configs:
+      - role: node
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(.*):10250'
+        replacement: '${1}:9100'
+        target_label: __address__
+
+  # Databases
+  - job_name: 'databases'
+    static_configs:
+      - targets:
+          - 'vector-db-exporter:9187'
+          - 'graph-db-exporter:7474'
+          - 'timeseries-db-exporter:8086'
+    labels:
+      component: 'database'
+
+---
+# Custom Metrics Definitions
+# (These would be emitted by the services)
+
+# Titan Memory Metrics:
+# - titan_memory_query_duration_seconds (histogram)
+# - titan_memory_query_total (counter)
+# - titan_memory_query_errors_total (counter)
+# - titan_memory_vector_search_latency_seconds (histogram)
+# - titan_memory_graph_traversal_duration_seconds (histogram)
+# - titan_memory_slot_size_bytes{slot="creative|audience|supply|outcome"}
+# - titan_memory_slot_records_total{slot="creative|audience|supply|outcome"}
+# - titan_memory_cache_hits_total (counter)
+# - titan_memory_cache_misses_total (counter)
+
+# Agent Metrics:
+# - agent_decision_duration_seconds{agent="strategy|creative|trading|bi"} (histogram)
+# - agent_decisions_total{agent="...", outcome="success|failure"} (counter)
+# - agent_recommendations_total{agent="...", priority="low|medium|high"} (counter)
+
+# Trading Agent Specific:
+# - trading_agent_bid_requests_total (counter)
+# - trading_agent_bids_submitted_total (counter)
+# - trading_agent_wins_total (counter)
+# - trading_agent_win_rate (gauge)
+# - trading_agent_bid_latency_milliseconds (histogram)
+# - trading_agent_pacing_multiplier{campaign_id="..."} (gauge)
+
+# MIRAS Metrics:
+# - miras_optimization_duration_seconds (histogram)
+# - miras_objective_value{objective="roas|cpa|reach|..."} (gauge)
+# - miras_pareto_front_size (gauge)
+# - miras_generations_total (counter)
+
+# Outcome Layer Metrics:
+# - vcf_created_total (counter)
+# - vcf_creation_duration_seconds (histogram)
+# - dvf_updated_total (counter)
+# - dvf_prediction_error{metric="conversions|revenue|..."} (gauge)
+
+# Business Metrics:
+# - campaign_budget_spent_dollars{campaign_id="..."} (gauge)
+# - campaign_conversions_total{campaign_id="..."} (counter)
+# - campaign_roas{campaign_id="..."} (gauge)
+# - campaign_cpa_dollars{campaign_id="..."} (gauge)

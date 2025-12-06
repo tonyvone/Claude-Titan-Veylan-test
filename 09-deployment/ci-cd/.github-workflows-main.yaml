@@ -1,0 +1,452 @@
+# GitHub Actions CI/CD Pipeline for Veylan VisionOS
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop, 'release/**']
+  pull_request:
+    branches: [main, develop]
+  release:
+    types: [published]
+
+env:
+  PYTHON_VERSION: '3.11'
+  DOCKER_REGISTRY: ghcr.io
+  DOCKER_IMAGE_PREFIX: veylan
+
+jobs:
+  # ============================================================================
+  # Stage 1: Code Quality & Testing
+  # ============================================================================
+
+  lint:
+    name: Lint Code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run black (formatter check)
+        run: black --check .
+
+      - name: Run ruff (linter)
+        run: ruff check .
+
+      - name: Run mypy (type checker)
+        run: mypy --install-types --non-interactive .
+
+      - name: Check import sorting
+        run: isort --check-only .
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Run Bandit (security linter)
+        run: |
+          pip install bandit
+          bandit -r . -f json -o bandit-report.json
+
+      - name: Run Safety (dependency checker)
+        run: |
+          pip install safety
+          safety check --json
+
+      - name: Run Trivy (container scanner)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: [titan-memory, miras, agents, outcome-layer, causal-reasoning]
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run unit tests
+        run: |
+          pytest tests/unit/${{ matrix.component }} \
+            --cov=src/${{ matrix.component }} \
+            --cov-report=xml \
+            --cov-report=html \
+            --junitxml=test-results-${{ matrix.component }}.xml
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage.xml
+          flags: ${{ matrix.component }}
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: test-results-${{ matrix.component }}
+          path: test-results-${{ matrix.component }}.xml
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      # Spin up test databases
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: testpass
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Start test stack
+        run: |
+          docker-compose -f docker-compose.test.yaml up -d
+          sleep 30  # Wait for services to be ready
+
+      - name: Run integration tests
+        run: |
+          pytest tests/integration \
+            --junitxml=integration-test-results.xml
+
+      - name: Cleanup
+        if: always()
+        run: docker-compose -f docker-compose.test.yaml down
+
+  # ============================================================================
+  # Stage 2: Build Docker Images
+  # ============================================================================
+
+  build-images:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: [lint, unit-tests]
+    if: github.event_name == 'push' || github.event_name == 'release'
+    strategy:
+      matrix:
+        service:
+          - titan-memory
+          - strategy-agent
+          - creative-agent
+          - trading-agent
+          - bi-agent
+          - miras-optimizer
+          - causal-reasoning
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_IMAGE_PREFIX }}/${{ matrix.service }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+
+      - name: Build and push
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./docker/${{ matrix.service }}/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+
+  # ============================================================================
+  # Stage 3: Deploy to Staging
+  # ============================================================================
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build-images, integration-tests]
+    if: github.ref == 'refs/heads/develop'
+    environment:
+      name: staging
+      url: https://staging.veylan.com
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Configure kubectl
+        uses: azure/k8s-set-context@v3
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBE_CONFIG_STAGING }}
+
+      - name: Deploy to staging
+        run: |
+          kubectl set image deployment/titan-memory-service \
+            titan-memory=${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_IMAGE_PREFIX }}/titan-memory:develop-${{ github.sha }} \
+            -n veylan-staging
+
+          kubectl set image deployment/strategy-agent \
+            strategy-agent=${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_IMAGE_PREFIX }}/strategy-agent:develop-${{ github.sha }} \
+            -n veylan-staging
+
+          # Wait for rollout
+          kubectl rollout status deployment/titan-memory-service -n veylan-staging
+          kubectl rollout status deployment/strategy-agent -n veylan-staging
+
+      - name: Run smoke tests
+        run: |
+          pytest tests/smoke --env=staging
+
+  # ============================================================================
+  # Stage 4: Performance & Load Testing
+  # ============================================================================
+
+  performance-tests:
+    name: Performance Tests
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    if: github.ref == 'refs/heads/develop'
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Run Locust load tests
+        run: |
+          pip install locust
+          locust -f tests/performance/locustfile.py \
+            --host https://staging.veylan.com \
+            --users 100 \
+            --spawn-rate 10 \
+            --run-time 5m \
+            --headless \
+            --csv=performance-results
+
+      - name: Upload performance results
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-results
+          path: performance-results*
+
+      - name: Check SLA compliance
+        run: |
+          python tests/performance/check_sla.py performance-results_stats.csv
+
+  # ============================================================================
+  # Stage 5: Deploy to Production
+  # ============================================================================
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, performance-tests]
+    if: github.event_name == 'release'
+    environment:
+      name: production
+      url: https://api.veylan.com
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Configure kubectl
+        uses: azure/k8s-set-context@v3
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBE_CONFIG_PRODUCTION }}
+
+      - name: Create deployment backup
+        run: |
+          kubectl get deployment -n veylan-production -o yaml > backup-$(date +%Y%m%d-%H%M%S).yaml
+
+      - name: Deploy to production (canary)
+        run: |
+          # Deploy to 10% of pods first
+          kubectl set image deployment/titan-memory-service \
+            titan-memory=${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_IMAGE_PREFIX }}/titan-memory:${{ github.event.release.tag_name }} \
+            -n veylan-production
+
+          kubectl patch deployment titan-memory-service \
+            -n veylan-production \
+            -p '{"spec":{"replicas":1}}'
+
+          kubectl rollout status deployment/titan-memory-service -n veylan-production
+
+      - name: Monitor canary (5 minutes)
+        run: |
+          sleep 300
+          # Check error rates
+          ERROR_RATE=$(kubectl exec -n veylan-production deploy/prometheus -- \
+            promtool query instant 'rate(http_requests_total{code=~"5.."}[5m])')
+
+          if (( $(echo "$ERROR_RATE > 0.01" | bc -l) )); then
+            echo "Error rate too high, rolling back"
+            kubectl rollout undo deployment/titan-memory-service -n veylan-production
+            exit 1
+          fi
+
+      - name: Scale to full deployment
+        run: |
+          kubectl scale deployment/titan-memory-service --replicas=5 -n veylan-production
+          kubectl rollout status deployment/titan-memory-service -n veylan-production
+
+      - name: Deploy remaining services
+        run: |
+          for service in strategy-agent creative-agent trading-agent bi-agent; do
+            kubectl set image deployment/$service \
+              $service=${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_IMAGE_PREFIX }}/$service:${{ github.event.release.tag_name }} \
+              -n veylan-production
+
+            kubectl rollout status deployment/$service -n veylan-production
+          done
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods -n veylan-production
+          kubectl get deployments -n veylan-production
+
+      - name: Notify Slack
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: 'Production deployment completed: ${{ github.event.release.tag_name }}'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        if: always()
+
+  # ============================================================================
+  # Stage 6: Post-Deployment Validation
+  # ============================================================================
+
+  post-deployment-validation:
+    name: Post-Deployment Validation
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    if: github.event_name == 'release'
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Run end-to-end tests
+        run: |
+          pytest tests/e2e --env=production --markers=production_safe
+
+      - name: Validate SLOs
+        run: |
+          python scripts/validate_slos.py --env=production
+
+      - name: Create release notes
+        uses: release-drafter/release-drafter@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ============================================================================
+  # Utility Jobs
+  # ============================================================================
+
+  dependency-update:
+    name: Update Dependencies
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Update pip dependencies
+        run: |
+          pip install pip-tools
+          pip-compile --upgrade requirements.in
+          pip-compile --upgrade requirements-dev.in
+
+      - name: Create PR
+        uses: peter-evans/create-pull-request@v4
+        with:
+          commit-message: 'chore: update dependencies'
+          title: 'Automated dependency update'
+          body: 'Automated dependency update via GitHub Actions'
+          branch: 'dependency-updates'
+
+  # Scheduled security scan
+  nightly-security-scan:
+    name: Nightly Security Scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Run comprehensive security scan
+        run: |
+          docker run --rm -v $(pwd):/src aquasec/trivy:latest fs /src
+
+      - name: Notify if vulnerabilities found
+        if: failure()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: 'failure'
+          text: 'Security vulnerabilities detected in nightly scan'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+
+# Schedule nightly builds and security scans
+# on:
+#   schedule:
+#     - cron: '0 2 * * *'  # 2 AM daily
